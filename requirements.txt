@@ -1,0 +1,152 @@
+# Requirements & API Specifications — Airbnb Clone Backend
+
+## Overview
+This file details technical and functional requirements for three core backend features:
+1. User Authentication
+2. Property Management
+3. Booking System (including Payments)
+
+---
+
+## 1. User Authentication
+
+### Goals
+- Secure sign up, sign in, email verification, password reset.
+- JWT-based stateless sessions with refresh tokens.
+
+### Endpoints
+**POST /api/v1/auth/register**
+- Body: `{ "first_name","last_name","email","password" }`
+- Validations:
+  - email: valid format, max 150 chars
+  - password: min 8 chars, at least 1 number
+- Response:
+  - `201 Created` `{ "user_id", "email", "verification_sent": true }`
+  - Sends verification email with token
+
+**POST /api/v1/auth/login**
+- Body: `{ "email", "password" }`
+- Response:
+  - `200 OK` `{ "access_token": <JWT>, "refresh_token": <token>, "expires_in": 3600 }`
+  - 401 for invalid credentials
+
+**POST /api/v1/auth/refresh**
+- Body: `{ "refresh_token" }`
+- Response: `200 OK` new access_token
+
+**POST /api/v1/auth/verify-email?token=...**
+- Verifies account, returns 200 on success.
+
+### Security
+- Password stored as bcrypt hash
+- Access token: JWT, expiry 1h, signed with strong secret
+- Use HTTPS in production
+
+---
+
+## 2. Property Management
+
+### Goals
+- Hosts can create and manage listings; guests can search and view.
+
+### Endpoints
+**POST /api/v1/properties**
+- Auth: Host
+- Body: `{ "title", "description", "address", "city","country","price_per_night", "max_guests","amenities":[], "images":[] }`
+- Validations:
+  - `price_per_night` > 0
+  - `max_guests` >= 1
+  - `images` are URLs or uploaded through separate image API
+- Response: `201 Created` with `property_id`
+
+**GET /api/v1/properties**
+- Query params: `q`, `city`, `country`, `check_in`, `check_out`, `min_price`, `max_price`, `guests`, `page`, `limit`
+- Behavior:
+  - Filters by availability using check_in/check_out
+  - Paginated result (default limit 20)
+  - Returns aggregated rating and preview image
+- Response: `200 OK` with `items` and `meta` (pagination)
+
+**PUT /api/v1/properties/{id}**
+- Auth: Host & owner-only
+- Validations as above
+- Response: `200 OK` updated data
+
+**DELETE /api/v1/properties/{id}**
+- Auth: Host & owner-only
+- Soft-delete or set status to inactive
+
+### Performance
+- Index: properties(city), properties(price_per_night)
+- Use materialized views or caching for heavy search requests
+
+---
+
+## 3. Booking System & Payments
+
+### Goals
+- Prevent double-booking, support secure payments, and update booking lifecycle via payment webhooks.
+
+### Endpoints
+**POST /api/v1/bookings**
+- Auth: Guest
+- Body: `{ "property_id", "check_in", "check_out", "guests_count", "payment_method" }`
+- Flow:
+  1. Validate date ranges and guests count.
+  2. Check property availability for the requested dates.
+  3. Calculate total price (nights * price_per_night + fees/taxes).
+  4. Create booking row with `status: pending`.
+  5. Create payment intent via Payment Service (Stripe).
+- Response: `201 Created` `{ "booking_id", "status": "pending", "payment_url" }`
+
+**GET /api/v1/bookings/{id}**
+- Auth: Guest/Host/Admin (based on ownership or admin)
+- Response: booking details and payment status
+
+**POST /api/v1/payments/webhook**
+- No auth (webhook secret verification)
+- Accepts events from Stripe/PayPal
+- On successful payment:
+  - Find booking -> set status `confirmed`
+  - Persist payment record
+  - Trigger notifications to host & guest
+- On failed payment:
+  - Set booking `payment_failed`, notify guest
+
+### Validations & Rules
+- Booking cannot be made if any overlapping confirmed booking exists for the property.
+- Cancellation policies should be parameterized by property.
+- Refund process initiated by admin or automation for cancellations.
+
+### DB & Concurrency
+- Use transactional checks with row-level locking or unique constraints on date ranges
+- Example technique: create `bookings` with constraint and use application-level lock to recheck before confirming.
+
+---
+
+## Cross-cutting Requirements
+
+### Pagination
+- All list endpoints must support `page` & `limit` or cursor-based paging.
+
+### Rate limiting
+- Apply general rate limiting (e.g., 100 requests/min per IP) and stricter limits for auth endpoints.
+
+### Logging & Monitoring
+- Structured logs (JSON) and metric collection (requests, latencies, errors).
+
+### API Documentation
+- Provide OpenAPI 3.0 spec for all endpoints and keep it updated.
+
+### Testing
+- Unit tests for services and controllers; integration tests for DB and external payment flows.
+
+### Performance targets
+- 95th percentile response time for read endpoints < 300ms for normal load (single region).
+- Search with filters should return paginated results within 500ms using proper indices & caching.
+
+---
+
+## Files to commit
+- `requirements.md` (this file)
+- Diagram PNGs under specified directories.
